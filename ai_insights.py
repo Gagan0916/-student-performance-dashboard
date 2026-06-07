@@ -119,6 +119,108 @@ def generate_study_plan(subject_rows):
     return "\n".join(lines), "fallback"
 
 
+# ---------------------------------------------------------------------------
+# Performance forecast / risk outlook
+# ---------------------------------------------------------------------------
+
+def generate_risk_forecast(subject_rows, cgpa_trend, current_cgpa):
+    """cgpa_trend: chronological list of past CGPA values (may have 0 or 1 entries)."""
+    if not subject_rows:
+        return "Add subjects to get a performance forecast.", "fallback"
+
+    trend_desc = (
+        f"past CGPA values over time, oldest to newest: {cgpa_trend}"
+        if len(cgpa_trend) > 1 else "only one submission so far, so no trend yet"
+    )
+    prompt = (
+        "You are a supportive academic forecaster, not a fortune teller. In ONE short, "
+        f"encouraging sentence with a light caveat that this is an estimate, tell the "
+        f"student where they appear to be headed. Current CGPA: {current_cgpa}. "
+        f"Trend: {trend_desc}. Subjects (name, marks/100, attendance %): "
+        f"{_rows_summary(subject_rows)}. No preamble, no markdown."
+    )
+    text = _call_gemini(prompt)
+    if text:
+        return text, "gemini"
+
+    if len(cgpa_trend) > 1:
+        delta = round(cgpa_trend[-1] - cgpa_trend[0], 2)
+        if delta > 0.2:
+            outlook = f"trending upward (+{delta} CGPA recently) - keep this momentum going"
+        elif delta < -0.2:
+            outlook = f"trending downward ({delta} CGPA recently) - a course correction soon would help"
+        else:
+            outlook = "holding steady - consistent effort should keep it that way"
+        return (f"Based on your recent submissions, your CGPA looks {outlook}. "
+                "(This is an estimate from limited data, not a guarantee.)", "fallback")
+
+    flagged = [r["subject"] for r in subject_rows if attendance_status(r["attendance_pct"])]
+    note = (f" Keep an eye on attendance in {', '.join(flagged)} - it tends to drag CGPA "
+            "down over time." if flagged else "")
+    return (f"With a current CGPA of {current_cgpa}, you're on track to hold a similar "
+            f"standing if your effort stays consistent.{note} "
+            "(Estimate based on a single submission - submit again later for a real trend.)", "fallback")
+
+
+# ---------------------------------------------------------------------------
+# Subject improvement roadmap
+# ---------------------------------------------------------------------------
+
+def generate_subject_roadmap(subject_rows):
+    if not subject_rows:
+        return "Add subjects to get an improvement roadmap.", "fallback"
+
+    weak = [r for r in subject_rows if score_to_grade(r["marks"])[1] in ("yellow", "red")]
+    if not weak:
+        return "All your subjects are in good shape right now - no roadmap needed. Keep it up!", "fallback"
+
+    prompt = (
+        "You are a subject-matter tutor. For each of these weaker subjects (name and "
+        f"marks out of 100): {_rows_summary(weak)}, give ONE concrete, topic-level "
+        "suggestion of what to revisit or practice next (e.g. 'In DBMS, revisit "
+        "normalization and indexing'). One short line per subject, plain text, no markdown."
+    )
+    text = _call_gemini(prompt)
+    if text:
+        return text, "gemini"
+
+    lines = [
+        f"{r['subject']}: revisit core fundamentals, redo recent assignments and quizzes, "
+        "and practice the specific topics you found hardest in your last test."
+        for r in weak
+    ]
+    return "\n".join(lines), "fallback"
+
+
+# ---------------------------------------------------------------------------
+# Personalized goal suggestions
+# ---------------------------------------------------------------------------
+
+def generate_goal_suggestions(subject_rows, cgpa):
+    if not subject_rows:
+        return "Add subjects to get personalized goal suggestions.", "fallback"
+
+    prompt = (
+        "You are a goal-setting coach. Based on this student's current CGPA "
+        f"({cgpa}) and subjects (name, marks out of 100): {_rows_summary(subject_rows)}, "
+        "suggest ONE realistic target CGPA and ONE realistic target marks-per-subject "
+        "for their next term, with a one-line reason why it's a sensible stretch. "
+        "Keep it to 2-3 short sentences, plain text, no markdown."
+    )
+    text = _call_gemini(prompt)
+    if text:
+        return text, "gemini"
+
+    suggested_cgpa = round(min(10.0, cgpa + 0.5), 1)
+    avg_marks = sum(r["marks"] for r in subject_rows) / len(subject_rows)
+    suggested_marks = min(100, round(avg_marks + 8))
+    return (
+        f"A realistic next step would be aiming for a CGPA around {suggested_cgpa} and "
+        f"around {suggested_marks} marks per subject - a steady improvement over your "
+        "current average without overreaching.", "fallback"
+    )
+
+
 def _rows_summary(rows):
     return "; ".join(
         f"{r['subject']}: {r['marks']}/100 marks, {r['attendance_pct']}% attendance"
