@@ -216,3 +216,52 @@ if st.session_state.analyzed:
                                    file_name=f"{st.session_state.student_name}_report.csv", mime="text/csv")
     export_cols[1].download_button("⬇️ Download PDF report", data=pdf_bytes,
                                    file_name=f"{st.session_state.student_name}_report.pdf", mime="application/pdf")
+
+# ---------------------------------------------------------------------------
+# Student lookup — browse anyone's saved records, independent of the form above
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.header("🔍 Look Up a Student")
+
+lookup_df = data_store.load_records(DATA_PATH)
+known_students = sorted(lookup_df["student_name"].dropna().unique().tolist())
+
+if not known_students:
+    st.info("No saved records yet — submit the form above to start building history.")
+else:
+    chosen = st.selectbox("Select a student to view their saved history", known_students)
+    student_df = lookup_df[lookup_df["student_name"] == chosen].copy()
+    student_df["grade"] = student_df["marks"].apply(lambda m: score_to_grade(m)[0])
+
+    timestamps = sorted(student_df["timestamp"].unique())
+    latest_rows = student_df[student_df["timestamp"] == timestamps[-1]].to_dict("records")
+    latest_cgpa = compute_cgpa(latest_rows)
+
+    lookup_cols = st.columns(3)
+    lookup_cols[0].metric("Latest CGPA", latest_cgpa)
+    lookup_cols[1].metric("Subjects on record", student_df["subject"].nunique())
+    lookup_cols[2].metric("Submissions on record", len(timestamps))
+
+    st.dataframe(
+        student_df[["timestamp", "subject", "marks", "attendance_pct", "assignments_done", "grade"]]
+        .sort_values(["timestamp", "subject"], ascending=[False, True]),
+        use_container_width=True, hide_index=True,
+    )
+
+    if len(timestamps) > 1:
+        history_points = []
+        for ts in timestamps:
+            group_rows = student_df[student_df["timestamp"] == ts].to_dict("records")
+            history_points.append({"timestamp": ts, "cgpa": compute_cgpa(group_rows)})
+        trend_df = pd.DataFrame(history_points)
+        fig_lookup_trend = px.line(trend_df, x="timestamp", y="cgpa", markers=True,
+                                   title=f"{chosen}'s CGPA Trend")
+        fig_lookup_trend.update_layout(yaxis_range=[0, 10])
+        st.plotly_chart(fig_lookup_trend, use_container_width=True)
+
+    flagged_subjects = student_df[student_df["attendance_pct"] < 75]["subject"].unique().tolist()
+    if flagged_subjects:
+        st.warning(f"⚠️ {chosen} has had attendance below 75% in: {', '.join(flagged_subjects)}")
+    else:
+        st.success(f"✅ {chosen} has stayed above the 75% attendance threshold across all recorded subjects.")
