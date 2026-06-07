@@ -1,0 +1,218 @@
+"""Student Performance Dashboard — Streamlit entry point."""
+
+from datetime import datetime
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from dotenv import load_dotenv
+
+import ai_insights
+import analytics
+import data_store
+import report
+from grading import attendance_status, compute_cgpa, score_to_grade
+
+load_dotenv()
+
+DATA_PATH = "data/records.csv"
+GRADE_COLOR_MAP = {"green": "#2ecc71", "yellow": "#f1c40f", "red": "#e74c3c"}
+
+st.set_page_config(page_title="Student Performance Dashboard", page_icon="📊", layout="wide")
+st.title("📊 Student Performance Dashboard")
+st.caption("Enter your marks, attendance, and assignments to get instant visual insights and AI-backed study guidance.")
+
+# ---------------------------------------------------------------------------
+# Session state setup
+# ---------------------------------------------------------------------------
+
+if "subjects" not in st.session_state:
+    st.session_state.subjects = [
+        {"subject": "", "marks": 0, "attendance_pct": 0, "assignments_done": 0}
+    ]
+if "analyzed" not in st.session_state:
+    st.session_state.analyzed = False
+
+# ---------------------------------------------------------------------------
+# Input panel
+# ---------------------------------------------------------------------------
+
+st.header("📝 Input Panel")
+
+student_name = st.text_input("Student name", value=st.session_state.get("student_name", ""))
+
+col_add, col_remove = st.columns(2)
+with col_add:
+    if st.button("➕ Add subject"):
+        st.session_state.subjects.append(
+            {"subject": "", "marks": 0, "attendance_pct": 0, "assignments_done": 0}
+        )
+        st.rerun()
+with col_remove:
+    if st.button("➖ Remove last subject") and len(st.session_state.subjects) > 1:
+        st.session_state.subjects.pop()
+        st.rerun()
+
+for i, row in enumerate(st.session_state.subjects):
+    cols = st.columns(4)
+    row["subject"] = cols[0].text_input("Subject", value=row["subject"], key=f"subject_{i}")
+    row["marks"] = cols[1].number_input("Marks (0-100)", min_value=0, max_value=100,
+                                        value=int(row["marks"]), key=f"marks_{i}")
+    row["attendance_pct"] = cols[2].number_input("Attendance %", min_value=0, max_value=100,
+                                                 value=int(row["attendance_pct"]), key=f"attendance_{i}")
+    row["assignments_done"] = cols[3].number_input("Assignments done", min_value=0,
+                                                   value=int(row["assignments_done"]), key=f"assignments_{i}")
+
+st.subheader("🎯 Goals")
+goal_cols = st.columns(2)
+target_cgpa = goal_cols[0].number_input("Target CGPA (optional)", min_value=0.0, max_value=10.0,
+                                        value=st.session_state.get("target_cgpa", 0.0), step=0.1)
+target_marks = goal_cols[1].number_input("Target marks per subject (optional)", min_value=0, max_value=100,
+                                         value=st.session_state.get("target_marks", 0))
+
+analyze_clicked = st.button("✅ Save & Analyze", type="primary")
+
+if analyze_clicked:
+    valid_rows = [r for r in st.session_state.subjects if r["subject"].strip()]
+    if not student_name.strip():
+        st.error("Please enter your name.")
+    elif not valid_rows:
+        st.error("Please add at least one subject with a name.")
+    else:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        for row in valid_rows:
+            data_store.append_record(DATA_PATH, {
+                "student_name": student_name.strip(),
+                "subject": row["subject"].strip(),
+                "marks": row["marks"],
+                "attendance_pct": row["attendance_pct"],
+                "assignments_done": row["assignments_done"],
+                "target_marks": target_marks,
+                "target_cgpa": target_cgpa,
+                "timestamp": timestamp,
+            })
+        st.session_state.student_name = student_name.strip()
+        st.session_state.target_cgpa = target_cgpa
+        st.session_state.target_marks = target_marks
+        st.session_state.analyzed = True
+        st.session_state.current_rows = valid_rows
+        st.success("Saved! Scroll down for your analysis.")
+
+# ---------------------------------------------------------------------------
+# Analysis (only once the student has analyzed at least once)
+# ---------------------------------------------------------------------------
+
+if st.session_state.analyzed:
+    rows = st.session_state.current_rows
+    cgpa = compute_cgpa(rows)
+    df = data_store.load_records(DATA_PATH)
+    student_history = df[df["student_name"] == st.session_state.student_name]
+
+    st.divider()
+    st.header("📈 Analysis")
+
+    # --- Grade visualizer ---------------------------------------------------
+    st.subheader("Grade Visualizer")
+    grades = [score_to_grade(r["marks"]) for r in rows]
+    chart_df = pd.DataFrame({
+        "Subject": [r["subject"] for r in rows],
+        "Marks": [r["marks"] for r in rows],
+        "Grade": [g[0] for g in grades],
+        "Color": [g[1] for g in grades],
+    })
+    fig = px.bar(chart_df, x="Subject", y="Marks", color="Color",
+                 color_discrete_map=GRADE_COLOR_MAP, text="Grade",
+                 range_y=[0, 100], title="Marks by Subject")
+    fig.update_layout(showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Class comparison ----------------------------------------------------
+    st.subheader("You vs. Class Average")
+    comparison = analytics.compare_to_class(rows, df)
+    if any(c["class_average"] is not None for c in comparison):
+        comp_df = pd.DataFrame(comparison).dropna(subset=["class_average"])
+        fig_cmp = go.Figure()
+        fig_cmp.add_bar(name="You", x=comp_df["subject"], y=comp_df["your_marks"])
+        fig_cmp.add_bar(name="Class Average", x=comp_df["subject"], y=comp_df["class_average"])
+        fig_cmp.update_layout(barmode="group", yaxis_range=[0, 100], title="Your Marks vs. Class Average")
+        st.plotly_chart(fig_cmp, use_container_width=True)
+        for c in comparison:
+            if c["delta"] is not None:
+                arrow = "🔼" if c["delta"] >= 0 else "🔽"
+                st.caption(f"{arrow} {c['subject']}: {c['delta']:+.1f} vs. class average ({c['class_average']})")
+    else:
+        st.info("Not enough stored records yet to compute a class average — submit more data over time to unlock this.")
+
+    # --- Attendance alerts ---------------------------------------------------
+    st.subheader("Attendance Alerts")
+    flagged = [r for r in rows if attendance_status(r["attendance_pct"])]
+    if flagged:
+        for r in flagged:
+            st.warning(f"⚠️ {r['subject']}: attendance is {r['attendance_pct']}% — below the 75% safety threshold.")
+    else:
+        st.success("✅ All subjects meet the 75% attendance requirement.")
+
+    # --- CGPA card + trend ----------------------------------------------------
+    st.subheader("CGPA")
+    st.metric("Current CGPA", cgpa)
+    if not student_history.empty:
+        history_points = []
+        for ts, group in student_history.groupby("timestamp"):
+            history_points.append({
+                "timestamp": ts,
+                "cgpa": compute_cgpa(group.to_dict("records")),
+            })
+        trend_df = pd.DataFrame(history_points).sort_values("timestamp")
+        if len(trend_df) > 1:
+            fig_trend = px.line(trend_df, x="timestamp", y="cgpa", markers=True, title="CGPA Trend Over Time")
+            fig_trend.update_layout(yaxis_range=[0, 10])
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.caption("Submit again later to start seeing your CGPA trend over time.")
+
+    # --- Goal tracker ----------------------------------------------------------
+    st.subheader("🎯 Goal Tracker")
+    if target_cgpa > 0:
+        progress = analytics.goal_progress(cgpa, target_cgpa)
+        st.write(f"**CGPA goal:** {cgpa} / {target_cgpa}")
+        st.progress(int(progress["progress_pct"]))
+        st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} CGPA points to go.")
+    if target_marks > 0:
+        st.write("**Per-subject marks goal:**")
+        for r in rows:
+            progress = analytics.goal_progress(r["marks"], target_marks)
+            st.write(f"{r['subject']}: {r['marks']} / {target_marks}")
+            st.progress(int(progress["progress_pct"]))
+            st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} marks to go.")
+    if target_cgpa <= 0 and target_marks <= 0:
+        st.info("Set a target CGPA or per-subject target marks above to track your progress toward your goals.")
+
+    # --- AI insights ------------------------------------------------------------
+    st.subheader("✨ AI Insights")
+    tip, tip_source = ai_insights.generate_tip(rows)
+    summary, summary_source = ai_insights.generate_summary(rows, cgpa)
+    plan, plan_source = ai_insights.generate_study_plan(rows)
+
+    def _source_caption(source):
+        return "✨ Generated by Gemini" if source == "gemini" else "📐 Generated locally (rule-based fallback)"
+
+    with st.expander("💡 Focus Tip", expanded=True):
+        st.write(tip)
+        st.caption(_source_caption(tip_source))
+    with st.expander("📋 Performance Summary", expanded=True):
+        st.write(summary)
+        st.caption(_source_caption(summary_source))
+    with st.expander("🗓️ Weekly Study Plan", expanded=True):
+        st.write(plan)
+        st.caption(_source_caption(plan_source))
+
+    # --- Export ------------------------------------------------------------------
+    st.subheader("📥 Export Report")
+    csv_bytes = report.build_csv_report(st.session_state.student_name, rows, cgpa, summary)
+    pdf_bytes = report.build_pdf_report(st.session_state.student_name, rows, cgpa, summary, tip)
+    export_cols = st.columns(2)
+    export_cols[0].download_button("⬇️ Download CSV report", data=csv_bytes,
+                                   file_name=f"{st.session_state.student_name}_report.csv", mime="text/csv")
+    export_cols[1].download_button("⬇️ Download PDF report", data=pdf_bytes,
+                                   file_name=f"{st.session_state.student_name}_report.pdf", mime="application/pdf")
