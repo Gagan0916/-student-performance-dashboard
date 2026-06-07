@@ -1,0 +1,22 @@
+student_name,subject,marks,attendance_pct,assignments_done,target_marks,target_cgpa,timestamp
+Anjali Rao,Maths,88,92,9,90,9.0,2026-02-01
+Anjali Rao,Physics,76,70,7,90,9.0,2026-02-01
+Anjali Rao,Chemistry,91,95,10,90,9.0,2026-02-01
+Anjali Rao,Maths,90,93,10,90,9.0,2026-04-01
+Anjali Rao,Physics,80,74,8,90,9.0,2026-04-01
+Anjali Rao,Chemistry,93,96,10,90,9.0,2026-04-01
+Rahul Mehta,Maths,55,68,4,80,8.0,2026-02-01
+Rahul Mehta,Physics,62,72,5,80,8.0,2026-02-01
+Rahul Mehta,Chemistry,58,65,4,80,8.0,2026-02-01
+Rahul Mehta,Maths,61,71,6,80,8.0,2026-04-01
+Rahul Mehta,Physics,66,74,6,80,8.0,2026-04-01
+Rahul Mehta,Chemistry,63,69,5,80,8.0,2026-04-01
+Priya Nair,Maths,95,98,10,95,9.5,2026-02-01
+Priya Nair,Physics,89,94,9,95,9.5,2026-02-01
+Priya Nair,Chemistry,92,97,10,95,9.5,2026-02-01
+Karthik Iyer,Maths,72,60,6,85,8.5,2026-02-01
+Karthik Iyer,Physics,69,58,5,85,8.5,2026-02-01
+Karthik Iyer,Chemistry,74,63,6,85,8.5,2026-02-01
+Sneha Verma,Maths,84,88,8,88,9.0,2026-02-01
+Sneha Verma,Physics,79,85,7,88,9.0,2026-02-01
+Sneha Verma,Chemistry,86,90,9,88,9.0,2026-02-01

@@ -221,6 +221,47 @@ def generate_goal_suggestions(subject_rows, cgpa):
     )
 
 
+def generate_class_overview(stats):
+    """stats: the dict returned by analytics.class_overview()."""
+    if not stats:
+        return "Upload student records to see a class-wide overview.", "fallback"
+
+    top_line = ", ".join(f"{s['student_name']} ({s['cgpa']})" for s in stats["top_students"])
+    risk_line = ", ".join(stats["at_risk_students"]) if stats["at_risk_students"] else "none"
+    subject_line = ", ".join(f"{subj}: {avg}" for subj, avg in stats["subject_averages"].items())
+
+    prompt = (
+        "You are an academic analytics assistant briefing a teacher on their class. "
+        "Write a warm, 3-4 sentence narrative overview covering overall performance, "
+        "standout students, subjects that need attention, and attendance risk. "
+        f"Stats - students: {stats['num_students']}, subjects: {stats['num_subjects']}, "
+        f"records: {stats['num_records']}, average marks: {stats['avg_marks']}/100, "
+        f"average attendance: {stats['avg_attendance']}%, grade spread (green/yellow/red): "
+        f"{stats['grade_counts']['green']}/{stats['grade_counts']['yellow']}/{stats['grade_counts']['red']}, "
+        f"top performers (name, CGPA): {top_line or 'not enough data'}, "
+        f"subject averages: {subject_line}, students with attendance below 75%: {risk_line}. "
+        "No preamble, no markdown."
+    )
+    text = _call_gemini(prompt)
+    if text:
+        return text, "gemini"
+
+    parts = [
+        f"This dataset covers {stats['num_students']} student(s) across {stats['num_subjects']} "
+        f"subject(s) ({stats['num_records']} records), averaging {stats['avg_marks']}/100 in marks "
+        f"and {stats['avg_attendance']}% attendance.",
+        f"Grade spread is {stats['grade_counts']['green']} strong, {stats['grade_counts']['yellow']} "
+        f"average, and {stats['grade_counts']['red']} weak performance(s).",
+    ]
+    if top_line:
+        parts.append(f"Leading the class: {top_line}.")
+    if stats["at_risk_students"]:
+        parts.append(f"Attendance needs attention for: {risk_line}.")
+    else:
+        parts.append("No students currently fall below the 75% attendance threshold.")
+    return " ".join(parts), "fallback"
+
+
 def _rows_summary(rows):
     return "; ".join(
         f"{r['subject']}: {r['marks']}/100 marks, {r['attendance_pct']}% attendance"

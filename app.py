@@ -1,7 +1,5 @@
 """Student Performance Dashboard — Streamlit entry point."""
 
-from datetime import datetime
-
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -16,7 +14,6 @@ from grading import attendance_status, compute_cgpa, score_to_grade
 
 load_dotenv()
 
-DATA_PATH = "data/records.csv"
 GRADE_COLOR_MAP = {"green": "#2ecc71", "yellow": "#f1c40f", "red": "#e74c3c"}
 
 
@@ -55,243 +52,220 @@ def _render_ai_insights(rows, cgpa, cgpa_trend_values, key_prefix):
 
     return tip, summary
 
+
 st.set_page_config(page_title="Student Performance Dashboard", page_icon="📊", layout="wide")
 st.title("📊 Student Performance Dashboard")
-st.caption("Enter your marks, attendance, and assignments to get instant visual insights and AI-backed study guidance.")
+st.caption("Upload a class roster (CSV or Excel) to get an instant class-wide summary, "
+           "then drill into any individual student for visual insights and AI-backed guidance.")
 
 # ---------------------------------------------------------------------------
-# Session state setup
+# Upload panel
 # ---------------------------------------------------------------------------
 
-if "subjects" not in st.session_state:
-    st.session_state.subjects = [
-        {"subject": "", "marks": 0, "attendance_pct": 0, "assignments_done": 0}
-    ]
-if "analyzed" not in st.session_state:
-    st.session_state.analyzed = False
+st.header("📤 Upload Student Data")
+st.caption(
+    "Accepted columns: `student_name`, `subject`, `marks`, `attendance_pct` (required), "
+    "plus optional `assignments_done`, `target_marks`, `target_cgpa`, `timestamp`."
+)
+
+uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx", "xls"])
+
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            raw_df = pd.read_csv(uploaded_file)
+        else:
+            raw_df = pd.read_excel(uploaded_file)
+        st.session_state.uploaded_df = data_store.prepare_uploaded_df(raw_df)
+        st.session_state.uploaded_file_name = uploaded_file.name
+        st.success(f"Loaded {len(st.session_state.uploaded_df)} record(s) from **{uploaded_file.name}**.")
+    except ValueError as exc:
+        st.error(f"Could not process this file: {exc}")
+    except Exception:
+        st.error("Could not read this file. Please upload a valid CSV or Excel file matching the schema above.")
+
+uploaded_df = st.session_state.get("uploaded_df")
+
+if uploaded_df is None or uploaded_df.empty:
+    st.info("Upload a file to see a class-wide summary and look up individual students.")
+    st.stop()
 
 # ---------------------------------------------------------------------------
-# Input panel
-# ---------------------------------------------------------------------------
-
-st.header("📝 Input Panel")
-
-student_name = st.text_input("Student name", value=st.session_state.get("student_name", ""))
-
-col_add, col_remove = st.columns(2)
-with col_add:
-    if st.button("➕ Add subject"):
-        st.session_state.subjects.append(
-            {"subject": "", "marks": 0, "attendance_pct": 0, "assignments_done": 0}
-        )
-        st.rerun()
-with col_remove:
-    if st.button("➖ Remove last subject") and len(st.session_state.subjects) > 1:
-        st.session_state.subjects.pop()
-        st.rerun()
-
-for i, row in enumerate(st.session_state.subjects):
-    cols = st.columns(4)
-    row["subject"] = cols[0].text_input("Subject", value=row["subject"], key=f"subject_{i}")
-    row["marks"] = cols[1].number_input("Marks (0-100)", min_value=0, max_value=100,
-                                        value=int(row["marks"]), key=f"marks_{i}")
-    row["attendance_pct"] = cols[2].number_input("Attendance %", min_value=0, max_value=100,
-                                                 value=int(row["attendance_pct"]), key=f"attendance_{i}")
-    row["assignments_done"] = cols[3].number_input("Assignments done", min_value=0,
-                                                   value=int(row["assignments_done"]), key=f"assignments_{i}")
-
-st.subheader("🎯 Goals")
-goal_cols = st.columns(2)
-target_cgpa = goal_cols[0].number_input("Target CGPA (optional)", min_value=0.0, max_value=10.0,
-                                        value=st.session_state.get("target_cgpa", 0.0), step=0.1)
-target_marks = goal_cols[1].number_input("Target marks per subject (optional)", min_value=0, max_value=100,
-                                         value=st.session_state.get("target_marks", 0))
-
-analyze_clicked = st.button("✅ Save & Analyze", type="primary")
-
-if analyze_clicked:
-    valid_rows = [r for r in st.session_state.subjects if r["subject"].strip()]
-    if not student_name.strip():
-        st.error("Please enter your name.")
-    elif not valid_rows:
-        st.error("Please add at least one subject with a name.")
-    else:
-        timestamp = datetime.now().isoformat(timespec="seconds")
-        for row in valid_rows:
-            data_store.append_record(DATA_PATH, {
-                "student_name": student_name.strip(),
-                "subject": row["subject"].strip(),
-                "marks": row["marks"],
-                "attendance_pct": row["attendance_pct"],
-                "assignments_done": row["assignments_done"],
-                "target_marks": target_marks,
-                "target_cgpa": target_cgpa,
-                "timestamp": timestamp,
-            })
-        st.session_state.student_name = student_name.strip()
-        st.session_state.target_cgpa = target_cgpa
-        st.session_state.target_marks = target_marks
-        st.session_state.analyzed = True
-        st.session_state.current_rows = valid_rows
-        st.success("Saved! Scroll down for your analysis.")
-
-# ---------------------------------------------------------------------------
-# Analysis (only once the student has analyzed at least once)
-# ---------------------------------------------------------------------------
-
-if st.session_state.analyzed:
-    rows = st.session_state.current_rows
-    cgpa = compute_cgpa(rows)
-    df = data_store.load_records(DATA_PATH)
-    student_history = df[df["student_name"] == st.session_state.student_name]
-
-    st.divider()
-    st.header("📈 Analysis")
-
-    # --- Grade visualizer ---------------------------------------------------
-    st.subheader("Grade Visualizer")
-    grades = [score_to_grade(r["marks"]) for r in rows]
-    chart_df = pd.DataFrame({
-        "Subject": [r["subject"] for r in rows],
-        "Marks": [r["marks"] for r in rows],
-        "Grade": [g[0] for g in grades],
-        "Color": [g[1] for g in grades],
-    })
-    fig = px.bar(chart_df, x="Subject", y="Marks", color="Color",
-                 color_discrete_map=GRADE_COLOR_MAP, text="Grade",
-                 range_y=[0, 100], title="Marks by Subject")
-    fig.update_layout(showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- Class comparison ----------------------------------------------------
-    st.subheader("You vs. Class Average")
-    comparison = analytics.compare_to_class(rows, df)
-    if any(c["class_average"] is not None for c in comparison):
-        comp_df = pd.DataFrame(comparison).dropna(subset=["class_average"])
-        fig_cmp = go.Figure()
-        fig_cmp.add_bar(name="You", x=comp_df["subject"], y=comp_df["your_marks"])
-        fig_cmp.add_bar(name="Class Average", x=comp_df["subject"], y=comp_df["class_average"])
-        fig_cmp.update_layout(barmode="group", yaxis_range=[0, 100], title="Your Marks vs. Class Average")
-        st.plotly_chart(fig_cmp, use_container_width=True)
-        for c in comparison:
-            if c["delta"] is not None:
-                arrow = "🔼" if c["delta"] >= 0 else "🔽"
-                st.caption(f"{arrow} {c['subject']}: {c['delta']:+.1f} vs. class average ({c['class_average']})")
-    else:
-        st.info("Not enough stored records yet to compute a class average — submit more data over time to unlock this.")
-
-    # --- Attendance alerts ---------------------------------------------------
-    st.subheader("Attendance Alerts")
-    flagged = [r for r in rows if attendance_status(r["attendance_pct"])]
-    if flagged:
-        for r in flagged:
-            st.warning(f"⚠️ {r['subject']}: attendance is {r['attendance_pct']}% — below the 75% safety threshold.")
-    else:
-        st.success("✅ All subjects meet the 75% attendance requirement.")
-
-    # --- CGPA card + trend ----------------------------------------------------
-    st.subheader("CGPA")
-    st.metric("Current CGPA", cgpa)
-    history_points = []
-    if not student_history.empty:
-        for ts, group in student_history.groupby("timestamp"):
-            history_points.append({
-                "timestamp": ts,
-                "cgpa": compute_cgpa(group.to_dict("records")),
-            })
-        history_points.sort(key=lambda p: p["timestamp"])
-    cgpa_trend_values = [p["cgpa"] for p in history_points]
-
-    if len(history_points) > 1:
-        trend_df = pd.DataFrame(history_points)
-        fig_trend = px.line(trend_df, x="timestamp", y="cgpa", markers=True, title="CGPA Trend Over Time")
-        fig_trend.update_layout(yaxis_range=[0, 10])
-        st.plotly_chart(fig_trend, use_container_width=True)
-    elif history_points:
-        st.caption("Submit again later to start seeing your CGPA trend over time.")
-
-    # --- Goal tracker ----------------------------------------------------------
-    st.subheader("🎯 Goal Tracker")
-    if target_cgpa > 0:
-        progress = analytics.goal_progress(cgpa, target_cgpa)
-        st.write(f"**CGPA goal:** {cgpa} / {target_cgpa}")
-        st.progress(int(progress["progress_pct"]))
-        st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} CGPA points to go.")
-    if target_marks > 0:
-        st.write("**Per-subject marks goal:**")
-        for r in rows:
-            progress = analytics.goal_progress(r["marks"], target_marks)
-            st.write(f"{r['subject']}: {r['marks']} / {target_marks}")
-            st.progress(int(progress["progress_pct"]))
-            st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} marks to go.")
-    if target_cgpa <= 0 and target_marks <= 0:
-        st.info("Set a target CGPA or per-subject target marks above to track your progress toward your goals.")
-
-    # --- AI insights ------------------------------------------------------------
-    st.subheader("✨ AI Insights")
-    tip, summary = _render_ai_insights(rows, cgpa, cgpa_trend_values, key_prefix="main")
-
-    # --- Export ------------------------------------------------------------------
-    st.subheader("📥 Export Report")
-    csv_bytes = report.build_csv_report(st.session_state.student_name, rows, cgpa, summary)
-    pdf_bytes = report.build_pdf_report(st.session_state.student_name, rows, cgpa, summary, tip)
-    export_cols = st.columns(2)
-    export_cols[0].download_button("⬇️ Download CSV report", data=csv_bytes,
-                                   file_name=f"{st.session_state.student_name}_report.csv", mime="text/csv")
-    export_cols[1].download_button("⬇️ Download PDF report", data=pdf_bytes,
-                                   file_name=f"{st.session_state.student_name}_report.pdf", mime="application/pdf")
-
-# ---------------------------------------------------------------------------
-# Student lookup — browse anyone's saved records, independent of the form above
+# Class summary
 # ---------------------------------------------------------------------------
 
 st.divider()
-st.header("🔍 Look Up a Student")
+st.header("📊 Class Summary")
 
-lookup_df = data_store.load_records(DATA_PATH)
-known_students = sorted(lookup_df["student_name"].dropna().unique().tolist())
+stats = analytics.class_overview(uploaded_df)
 
-if not known_students:
-    st.info("No saved records yet — submit the form above to start building history.")
-else:
-    chosen = st.selectbox("Select a student to view their saved history", known_students)
-    student_df = lookup_df[lookup_df["student_name"] == chosen].copy()
-    student_df["grade"] = student_df["marks"].apply(lambda m: score_to_grade(m)[0])
+overview_cols = st.columns(4)
+overview_cols[0].metric("Students", stats["num_students"])
+overview_cols[1].metric("Subjects", stats["num_subjects"])
+overview_cols[2].metric("Avg. marks", f"{stats['avg_marks']}/100")
+overview_cols[3].metric("Avg. attendance", f"{stats['avg_attendance']}%")
 
-    timestamps = sorted(student_df["timestamp"].unique())
-    latest_rows = student_df[student_df["timestamp"] == timestamps[-1]].to_dict("records")
-    latest_cgpa = compute_cgpa(latest_rows)
+chart_cols = st.columns(2)
+with chart_cols[0]:
+    st.subheader("Grade Distribution")
+    grade_df = pd.DataFrame({
+        "Grade band": ["Strong (green)", "Average (yellow)", "Weak (red)"],
+        "Count": [stats["grade_counts"]["green"], stats["grade_counts"]["yellow"], stats["grade_counts"]["red"]],
+        "Color": ["green", "yellow", "red"],
+    })
+    fig_grades = px.bar(grade_df, x="Grade band", y="Count", color="Color",
+                        color_discrete_map=GRADE_COLOR_MAP, title="Records by Grade Band")
+    fig_grades.update_layout(showlegend=False)
+    st.plotly_chart(fig_grades, use_container_width=True)
 
-    lookup_cols = st.columns(3)
-    lookup_cols[0].metric("Latest CGPA", latest_cgpa)
-    lookup_cols[1].metric("Subjects on record", student_df["subject"].nunique())
-    lookup_cols[2].metric("Submissions on record", len(timestamps))
+with chart_cols[1]:
+    st.subheader("Average Marks by Subject")
+    subj_avg_df = stats["subject_averages"].reset_index()
+    subj_avg_df.columns = ["Subject", "Average marks"]
+    fig_subjects = px.bar(subj_avg_df, x="Subject", y="Average marks", range_y=[0, 100],
+                          title="Class Average per Subject")
+    st.plotly_chart(fig_subjects, use_container_width=True)
 
-    st.dataframe(
-        student_df[["timestamp", "subject", "marks", "attendance_pct", "assignments_done", "grade"]]
-        .sort_values(["timestamp", "subject"], ascending=[False, True]),
-        use_container_width=True, hide_index=True,
-    )
-
-    lookup_history_points = []
-    for ts in timestamps:
-        group_rows = student_df[student_df["timestamp"] == ts].to_dict("records")
-        lookup_history_points.append({"timestamp": ts, "cgpa": compute_cgpa(group_rows)})
-    lookup_cgpa_trend_values = [p["cgpa"] for p in lookup_history_points]
-
-    if len(lookup_history_points) > 1:
-        trend_df = pd.DataFrame(lookup_history_points)
-        fig_lookup_trend = px.line(trend_df, x="timestamp", y="cgpa", markers=True,
-                                   title=f"{chosen}'s CGPA Trend")
-        fig_lookup_trend.update_layout(yaxis_range=[0, 10])
-        st.plotly_chart(fig_lookup_trend, use_container_width=True)
-
-    flagged_subjects = student_df[student_df["attendance_pct"] < 75]["subject"].unique().tolist()
-    if flagged_subjects:
-        st.warning(f"⚠️ {chosen} has had attendance below 75% in: {', '.join(flagged_subjects)}")
+leaderboard_cols = st.columns(2)
+with leaderboard_cols[0]:
+    st.subheader("🏆 Top Performers")
+    if stats["top_students"]:
+        for s in stats["top_students"]:
+            st.write(f"**{s['student_name']}** — CGPA {s['cgpa']}")
     else:
-        st.success(f"✅ {chosen} has stayed above the 75% attendance threshold across all recorded subjects.")
+        st.caption("Not enough data to rank students yet.")
+with leaderboard_cols[1]:
+    st.subheader("📉 Needs Support")
+    if stats["bottom_students"]:
+        for s in stats["bottom_students"]:
+            st.write(f"**{s['student_name']}** — CGPA {s['cgpa']}")
+    else:
+        st.caption("Not enough data to rank students yet.")
 
-    st.subheader(f"✨ AI Insights for {chosen}")
-    st.caption("Based on their most recent submission and saved history.")
-    _render_ai_insights(latest_rows, latest_cgpa, lookup_cgpa_trend_values, key_prefix=f"lookup_{chosen}")
+st.subheader("⚠️ Attendance Risk")
+if stats["at_risk_students"]:
+    st.warning(f"{len(stats['at_risk_students'])} student(s) below the 75% attendance threshold: "
+               f"{', '.join(stats['at_risk_students'])}")
+else:
+    st.success("✅ No students are currently below the 75% attendance threshold.")
+
+st.subheader("✨ AI Class Overview")
+overview_text, overview_source = ai_insights.generate_class_overview(stats)
+st.write(overview_text)
+st.caption(_source_caption(overview_source))
+
+with st.expander("📄 View raw uploaded data"):
+    st.dataframe(uploaded_df, use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------------------------
+# Student selection — drill into one student from the uploaded dataset
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.header("🔍 Select a Student")
+
+known_students = sorted(uploaded_df["student_name"].dropna().unique().tolist())
+chosen = st.selectbox("Choose a student to view their detailed analysis", known_students)
+
+student_df = uploaded_df[uploaded_df["student_name"] == chosen].copy()
+student_df["grade"] = student_df["marks"].apply(lambda m: score_to_grade(m)[0])
+
+timestamps = sorted(student_df["timestamp"].unique())
+latest_rows = student_df[student_df["timestamp"] == timestamps[-1]].to_dict("records")
+cgpa = compute_cgpa(latest_rows)
+target_cgpa = latest_rows[0].get("target_cgpa", 0) or 0
+target_marks = latest_rows[0].get("target_marks", 0) or 0
+
+student_cols = st.columns(3)
+student_cols[0].metric("CGPA", cgpa)
+student_cols[1].metric("Subjects on record", student_df["subject"].nunique())
+student_cols[2].metric("Records on file", len(student_df))
+
+# --- Grade visualizer ---------------------------------------------------
+st.subheader("Grade Visualizer")
+grades = [score_to_grade(r["marks"]) for r in latest_rows]
+chart_df = pd.DataFrame({
+    "Subject": [r["subject"] for r in latest_rows],
+    "Marks": [r["marks"] for r in latest_rows],
+    "Grade": [g[0] for g in grades],
+    "Color": [g[1] for g in grades],
+})
+fig = px.bar(chart_df, x="Subject", y="Marks", color="Color",
+             color_discrete_map=GRADE_COLOR_MAP, text="Grade",
+             range_y=[0, 100], title=f"{chosen}'s Marks by Subject")
+fig.update_layout(showlegend=False)
+st.plotly_chart(fig, use_container_width=True)
+
+# --- Class comparison ----------------------------------------------------
+st.subheader("You vs. Class Average")
+comparison = analytics.compare_to_class(latest_rows, uploaded_df)
+if any(c["class_average"] is not None for c in comparison):
+    comp_df = pd.DataFrame(comparison).dropna(subset=["class_average"])
+    fig_cmp = go.Figure()
+    fig_cmp.add_bar(name=chosen, x=comp_df["subject"], y=comp_df["your_marks"])
+    fig_cmp.add_bar(name="Class Average", x=comp_df["subject"], y=comp_df["class_average"])
+    fig_cmp.update_layout(barmode="group", yaxis_range=[0, 100], title=f"{chosen}'s Marks vs. Class Average")
+    st.plotly_chart(fig_cmp, use_container_width=True)
+    for c in comparison:
+        if c["delta"] is not None:
+            arrow = "🔼" if c["delta"] >= 0 else "🔽"
+            st.caption(f"{arrow} {c['subject']}: {c['delta']:+.1f} vs. class average ({c['class_average']})")
+else:
+    st.info("Not enough data across the uploaded file to compute a class average for these subjects.")
+
+# --- Attendance alerts ---------------------------------------------------
+st.subheader("Attendance Alerts")
+flagged = [r for r in latest_rows if attendance_status(r["attendance_pct"])]
+if flagged:
+    for r in flagged:
+        st.warning(f"⚠️ {r['subject']}: attendance is {r['attendance_pct']}% — below the 75% safety threshold.")
+else:
+    st.success("✅ All subjects meet the 75% attendance requirement.")
+
+# --- CGPA card + trend ----------------------------------------------------
+st.subheader("CGPA")
+st.metric("Current CGPA", cgpa)
+history_points = []
+for ts in timestamps:
+    group_rows = student_df[student_df["timestamp"] == ts].to_dict("records")
+    history_points.append({"timestamp": ts, "cgpa": compute_cgpa(group_rows)})
+cgpa_trend_values = [p["cgpa"] for p in history_points]
+
+if len(history_points) > 1:
+    trend_df = pd.DataFrame(history_points)
+    fig_trend = px.line(trend_df, x="timestamp", y="cgpa", markers=True, title=f"{chosen}'s CGPA Trend")
+    fig_trend.update_layout(yaxis_range=[0, 10])
+    st.plotly_chart(fig_trend, use_container_width=True)
+else:
+    st.caption("Only one submission on record for this student — upload more historical rows to see a trend.")
+
+# --- Goal tracker ----------------------------------------------------------
+st.subheader("🎯 Goal Tracker")
+if target_cgpa > 0:
+    progress = analytics.goal_progress(cgpa, target_cgpa)
+    st.write(f"**CGPA goal:** {cgpa} / {target_cgpa}")
+    st.progress(int(progress["progress_pct"]))
+    st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} CGPA points to go.")
+if target_marks > 0:
+    st.write("**Per-subject marks goal:**")
+    for r in latest_rows:
+        progress = analytics.goal_progress(r["marks"], target_marks)
+        st.write(f"{r['subject']}: {r['marks']} / {target_marks}")
+        st.progress(int(progress["progress_pct"]))
+        st.caption("🎉 Goal met!" if progress["met"] else f"{progress['gap']} marks to go.")
+if target_cgpa <= 0 and target_marks <= 0:
+    st.info("Include `target_cgpa` and/or `target_marks` columns in your upload to track progress toward goals.")
+
+# --- AI insights ------------------------------------------------------------
+st.subheader(f"✨ AI Insights for {chosen}")
+tip, summary = _render_ai_insights(latest_rows, cgpa, cgpa_trend_values, key_prefix=f"student_{chosen}")
+
+# --- Export ------------------------------------------------------------------
+st.subheader("📥 Export Report")
+csv_bytes = report.build_csv_report(chosen, latest_rows, cgpa, summary)
+pdf_bytes = report.build_pdf_report(chosen, latest_rows, cgpa, summary, tip)
+export_cols = st.columns(2)
+export_cols[0].download_button("⬇️ Download CSV report", data=csv_bytes,
+                               file_name=f"{chosen}_report.csv", mime="text/csv")
+export_cols[1].download_button("⬇️ Download PDF report", data=pdf_bytes,
+                               file_name=f"{chosen}_report.pdf", mime="application/pdf")
